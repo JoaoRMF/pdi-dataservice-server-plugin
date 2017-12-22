@@ -40,6 +40,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -60,6 +61,7 @@ public class TransientResolver implements DataServiceResolver {
   private ServiceCacheFactory cacheFactory;
   private LogLevel logLevel;
   private Supplier<Spoon> spoonSupplier;
+  private HashSet<String> dataServiceNames;
 
   public TransientResolver( KettleRepositoryLocator repositoryLocator, DataServiceContext context,
                             ServiceCacheFactory cacheFactory, final LogLevel logLevel ) {
@@ -73,6 +75,7 @@ public class TransientResolver implements DataServiceResolver {
     this.cacheFactory = cacheFactory;
     this.logLevel = logLevel;
     this.spoonSupplier = spoonSupplier;
+    this.dataServiceNames = new HashSet<>();
   }
 
 
@@ -145,6 +148,8 @@ public class TransientResolver implements DataServiceResolver {
     }
     dataServiceMeta.ifPresent( configure( dataServiceName, stepName ) );
 
+    dataServiceNames.add( dataServiceName );
+
     return dataServiceMeta.orElse( null );
   }
 
@@ -210,11 +215,19 @@ public class TransientResolver implements DataServiceResolver {
   }
 
   @Override public List<String> getDataServiceNames() {
-    return new ArrayList<>();
+    List<String> dataServiceNamesOutput = new ArrayList<>();
+    for( String dataServiceName : this.dataServiceNames ){
+      dataServiceNamesOutput.add( dataServiceName );
+    }
+    return dataServiceNamesOutput;
   }
 
   @Override public List<DataServiceMeta> getDataServices( com.google.common.base.Function<Exception, Void> logger ) {
-    return new ArrayList<>();
+    List<DataServiceMeta> dataServices = new ArrayList<>();
+    for ( String dataServiceName : this.dataServiceNames ) {
+      dataServices.add( this.getDataService( dataServiceName ) );
+    }
+    return dataServices;
   }
 
   private interface TransMetaLoader {
