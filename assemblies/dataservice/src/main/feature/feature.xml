@@ -3,5 +3,11 @@
 
     <details>${project.description}</details>
 
+    <!--feature>pax-http-jetty</feature>
+    <feature>cxf-jaxrs</feature>
+    <feature>cxf-transports-websocket-server</feature>
+    <feature>cxf-http-jetty</feature>
+    <feature>cxf-http-async</feature-->
+
   </feature>
 </features>
