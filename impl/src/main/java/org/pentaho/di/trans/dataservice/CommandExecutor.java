@@ -117,7 +117,8 @@ public class CommandExecutor {
     @Override public String execute( String[] args ) {
       DataServiceExecutor executor = context.getExecutor( args[0] );
       if ( executor != null ) {
-        executor.stop();
+        //For push based we should manage this executor.stop() in a different matter
+        //executor.stop();
         context.removeExecutor( args[0] );
         return "true";
       }

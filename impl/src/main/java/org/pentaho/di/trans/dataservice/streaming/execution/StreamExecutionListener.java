@@ -25,6 +25,7 @@ package org.pentaho.di.trans.dataservice.streaming.execution;
 import com.google.common.annotations.VisibleForTesting;
 import io.reactivex.Observable;
 import io.reactivex.disposables.Disposable;
+import io.reactivex.functions.Consumer;
 import io.reactivex.subjects.PublishSubject;
 import org.pentaho.di.core.RowMetaAndData;
 import org.pentaho.di.trans.dataservice.client.api.IDataServiceClientService;
@@ -32,6 +33,7 @@ import org.pentaho.di.trans.dataservice.client.api.IDataServiceClientService;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -47,9 +49,10 @@ public class StreamExecutionListener {
   private Disposable starterSubject;
   private Disposable subject;
   private Disposable fallbackSubject;
-  private Observable<List<RowMetaAndData>> buffer;
-  private Observable<List<RowMetaAndData>> fallbackBuffer;
+  private Observable<Observable<RowMetaAndData>> buffer;
+  private Observable<Observable<RowMetaAndData>> fallbackBuffer;
   private List<RowMetaAndData> cachedWindow = Collections.synchronizedList( new ArrayList<RowMetaAndData>() );
+  private PublishSubject<List<RowMetaAndData>> outputBufferPublisher;
   private final AtomicBoolean isProcessing = new AtomicBoolean( false );
   private final AtomicBoolean hasWindow = new AtomicBoolean( false );
 
@@ -66,7 +69,7 @@ public class StreamExecutionListener {
    * @param maxRows The max rows window size.
    * @param maxTime The max time window size.
    */
-  public StreamExecutionListener( final PublishSubject<RowMetaAndData> stream,
+  public StreamExecutionListener( final PublishSubject<RowMetaAndData> stream, Consumer<List<RowMetaAndData>> windowConsumer,
                                   final IDataServiceClientService.StreamingMode windowMode, final long windowSize,
                                   final long windowEvery, final int maxRows, final long maxTime ) {
     this.windowMode = windowMode;
@@ -75,42 +78,61 @@ public class StreamExecutionListener {
     this.maxRows = maxRows;
     this.maxTime = maxTime;
 
-    init( stream );
+    init( stream, windowConsumer );
+  }
+
+  public StreamExecutionListener( final PublishSubject<RowMetaAndData> stream,
+                                  final IDataServiceClientService.StreamingMode windowMode, final long windowSize,
+                                  final long windowEvery, final int maxRows, final long maxTime ) {
+    this( stream, null, windowMode, windowSize, windowEvery, maxRows, maxTime );
   }
 
   /**
    * Inits the listener streaming buffers.
    * @param stream The {@link io.reactivex.subjects.PublishSubject} data stream.
    */
-  private void init( PublishSubject<RowMetaAndData> stream ) {
+  private void init( PublishSubject<RowMetaAndData> stream, Consumer<List<RowMetaAndData>> windowConsumer ) {
     boolean rowBased = IDataServiceClientService.StreamingMode.ROW_BASED.equals( windowMode );
     boolean timeBased = IDataServiceClientService.StreamingMode.TIME_BASED.equals( windowMode );
 
     if ( windowEvery > 0 ) {
       if ( timeBased ) {
-        this.buffer = stream.buffer( windowSize, windowEvery, TimeUnit.MILLISECONDS );
-        this.fallbackBuffer = stream.buffer( maxRows );
+        this.buffer = stream.window( windowSize, windowEvery, TimeUnit.MILLISECONDS );
+        this.fallbackBuffer = stream.window( maxRows );
       } else if ( rowBased ) {
-        this.buffer = stream.buffer( (int) windowSize, (int) windowEvery );
-        this.fallbackBuffer = stream.buffer( maxTime, TimeUnit.MILLISECONDS );
+        this.buffer = stream.window( (int) windowSize, (int) windowEvery );
+        this.fallbackBuffer = stream.window( maxTime, TimeUnit.MILLISECONDS );
       }
     } else if ( timeBased ) {
-      this.buffer = stream.buffer( windowSize, TimeUnit.MILLISECONDS );
-      this.fallbackBuffer = stream.buffer( maxRows );
+      this.buffer = stream.window( windowSize, TimeUnit.MILLISECONDS );
+      this.fallbackBuffer = stream.window( maxRows );
     } else {
-      this.buffer = stream.buffer( (int) windowSize );
-      this.fallbackBuffer = stream.buffer( maxTime, TimeUnit.MILLISECONDS );
+      this.buffer = stream.window( (int) windowSize );
+      this.fallbackBuffer = stream.window( maxTime, TimeUnit.MILLISECONDS );
     }
 
-    this.subject = this.buffer.subscribe( window -> processBufferWindow( window ) );
+    this.outputBufferPublisher = PublishSubject.create();
+    this.outputBufferPublisher.subscribe( windowConsumer );
 
-    this.fallbackSubject = this.fallbackBuffer.subscribe( window -> processFallbackWindow( window ) );
 
-    this.starterSubject = stream.subscribe( item -> {
-      if ( !hasWindow.get() ) {
-        cachedWindow.add( item );
-      }
-    } );
+    this.subject = this.buffer.subscribe( observableWindow -> processBufferWindow( observableWindow ) );
+    this.fallbackSubject = this.fallbackBuffer.subscribe( observableWindow -> processFallbackWindow( observableWindow ) );
+
+    if(timeBased) {
+      this.starterSubject = stream.buffer( windowEvery, TimeUnit.MILLISECONDS ).cache().subscribe( items -> {
+        if ( !hasWindow.get() ) {
+          this.cachedWindow.addAll( items );
+          outputBufferPublisher.onNext( this.cachedWindow );
+        }
+      } );
+    } else {
+      this.starterSubject = stream.buffer( (int) windowEvery ).subscribe( items -> {
+        if ( !hasWindow.get() ) {
+          this.cachedWindow.addAll( items );
+          outputBufferPublisher.onNext( this.cachedWindow );
+        }
+      } );
+    }
   }
 
   /**
@@ -140,6 +162,7 @@ public class StreamExecutionListener {
       this.starterSubject.dispose();
       this.starterSubject = null;
     }
+    this.cachedWindow.clear();
   }
 
   /**
@@ -169,19 +192,24 @@ public class StreamExecutionListener {
    *
    * @return The {@link io.reactivex.Observable} window buffer to process.
    */
-  private void processBufferWindow( List<RowMetaAndData> list ) {
-    if ( isProcessing.compareAndSet( false, true ) ) {
-      if ( this.fallbackSubject != null ) {
-        this.fallbackSubject.dispose();
-        this.fallbackSubject = this.fallbackBuffer.subscribe( bufferList -> processFallbackWindow( bufferList ) );
+  private void processBufferWindow( Observable<RowMetaAndData> list ) throws ExecutionException, InterruptedException {
+    List<RowMetaAndData> bufferWindow = Collections.synchronizedList( new ArrayList<RowMetaAndData>() );
+    list.doOnComplete( () -> {
+      if ( isProcessing.compareAndSet( false, true ) ) {
+        hasWindow.set( true );
+        unSubscribeStarter();
+
+        if ( this.fallbackSubject != null ) {
+          this.fallbackSubject.dispose();
+          this.fallbackSubject = this.fallbackBuffer.subscribe( bufferList -> processFallbackWindow( bufferList ) );
+        }
+
+        outputBufferPublisher.onNext( bufferWindow );
+        isProcessing.set( false );
       }
-
-      unSubscribeStarter();
-      hasWindow.set( true );
-
-      setCacheWindow( list );
-      isProcessing.set( false );
-    }
+    } ).subscribe( rowMetaAndData -> {
+      bufferWindow.add( rowMetaAndData );
+    } );
   }
 
   /**
@@ -189,19 +217,23 @@ public class StreamExecutionListener {
    *
    * @return The {@link io.reactivex.Observable} fallback window buffer to process.
    */
-  private void processFallbackWindow( List<RowMetaAndData> list ) {
-    if ( isProcessing.compareAndSet( false, true ) ) {
-      if ( this.subject != null ) {
-        this.subject.dispose();
-        this.subject = this.buffer.subscribe( bufferList -> processBufferWindow( bufferList ) );
+  private void processFallbackWindow( Observable<RowMetaAndData> list ) throws ExecutionException, InterruptedException {
+    List<RowMetaAndData> bufferWindow = Collections.synchronizedList( new ArrayList<RowMetaAndData>() );
+    list.doOnComplete( () -> {
+      if ( isProcessing.compareAndSet( false, true ) ) {
+        hasWindow.set( true );
+        unSubscribeStarter();
+
+        if ( this.subject != null ) {
+          this.subject.dispose();
+          this.subject = this.buffer.subscribe( bufferList -> processBufferWindow( bufferList ) );
+        }
+        outputBufferPublisher.onNext( bufferWindow );
+        isProcessing.set( false );
       }
-
-      unSubscribeStarter();
-      hasWindow.set( true );
-
-      setCacheWindow( list );
-      isProcessing.set( false );
-    }
+    } ).subscribe( rowMetaAndData -> {
+      bufferWindow.add( rowMetaAndData );
+    } );
   }
 
   /**

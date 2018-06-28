@@ -26,11 +26,13 @@ import org.pentaho.di.trans.dataservice.optimization.AutoOptimizationService;
 import org.pentaho.di.trans.dataservice.optimization.PushDownFactory;
 import org.pentaho.di.trans.dataservice.serialization.DataServiceMetaStoreUtil;
 import org.pentaho.di.trans.dataservice.streaming.StreamServiceKey;
+import org.pentaho.di.trans.dataservice.streaming.execution.StreamingGeneratedTransExecution;
 import org.pentaho.di.trans.dataservice.streaming.execution.StreamingServiceTransExecutor;
 import org.pentaho.di.trans.dataservice.ui.DataServiceDelegate;
 import org.pentaho.di.trans.dataservice.ui.UIFactory;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Data Services context interface.
@@ -136,4 +138,6 @@ public interface Context {
    * @param dataServiceName The name of the data service to be removed.
    */
   void removeServiceTransExecutor( String dataServiceName );
+
+  ConcurrentMap<String, StreamingGeneratedTransExecution> getStreamingGenTransCache();
 }

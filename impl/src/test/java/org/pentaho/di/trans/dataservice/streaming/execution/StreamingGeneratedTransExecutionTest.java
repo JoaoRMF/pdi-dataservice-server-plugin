@@ -23,6 +23,7 @@
 package org.pentaho.di.trans.dataservice.streaming.execution;
 
 import io.reactivex.Observable;
+import io.reactivex.Observer;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -72,7 +73,7 @@ public class StreamingGeneratedTransExecutionTest {
 
   @Mock StreamingServiceTransExecutor serviceExecutor;
   @Mock Trans genTrans;
-  @Mock RowListener resultRowListener;
+  @Mock Observer<RowMetaAndData> consumer;
   @Mock StreamExecutionListener streamExecutionListener;
   @Mock RowMetaAndData rowMetaAndData;
   @Mock LogChannelInterface log;
@@ -96,7 +97,7 @@ public class StreamingGeneratedTransExecutionTest {
     when( genTrans.findRunThread( MOCK_RESULT_STEP_NAME ) ).thenReturn( resultStep );
     when( genTrans.addRowProducer( MOCK_INJECTOR_STEP_NAME, 0 ) ).thenReturn( rowProducer );
 
-    gentransExecutor = new StreamingGeneratedTransExecution( serviceExecutor, genTrans, resultRowListener,
+    gentransExecutor = new StreamingGeneratedTransExecution( serviceExecutor, genTrans, consumer,
       MOCK_INJECTOR_STEP_NAME, MOCK_RESULT_STEP_NAME, MOCK_QUERY, MOCK_WINDOW_MODE_ROW_BASED, MOCK_WINDOW_SIZE,
       MOCK_WINDOW_EVERY, MOCK_WINDOW_MAX_SIZE );
   }
@@ -146,7 +147,7 @@ public class StreamingGeneratedTransExecutionTest {
     verify( genTrans, times( numExecs ) ).startThreads( );
     verify( genTrans, times( numExecs ) ).findRunThread( MOCK_RESULT_STEP_NAME );
     verify( resultStep, times( numExecs ) ).cleanup( );
-    verify( resultStep, times( numExecs ) ).addRowListener( resultRowListener );
+    verify( resultStep, times( numExecs ) ).addRowListener( any( RowListener.class ) );
     verify( rowProducer, times( numExecs ) ).finished( );
     verify( genTrans, times( numExecs ) ).waitUntilFinished( );
     verify( genTrans, times( numExecs ) ).stopAll( );
