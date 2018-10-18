@@ -285,37 +285,39 @@ public class DataServiceExecutor {
 
       // Check if there is already a serviceTransformation in the context
       if ( service.isStreaming() ) {
-        this.streamServiceKey = getStreamingServiceKey();
-        StreamingServiceTransExecutor serviceTransExecutor = context.getServiceTransExecutor( streamServiceKey );
+        synchronized ( context ) {
+          this.streamServiceKey = getStreamingServiceKey();
+          StreamingServiceTransExecutor serviceTransExecutor = context.getServiceTransExecutor( streamServiceKey );
 
-        if ( serviceTransExecutor != null
+          if ( serviceTransExecutor != null
             && !serviceTransExecutor.getServiceTrans().getTransMeta().getModifiedDate()
             .equals( service.getServiceTrans().getModifiedDate() ) ) {
-          context.removeServiceTransExecutor( serviceTransExecutor.getKey() );
-          serviceTransExecutor.stopAll();
-          serviceTransExecutor = null;
-        }
-
-        // Gets service execution from context
-        if ( serviceTransExecutor == null ) {
-          if ( serviceTrans == null && service.getServiceTrans() != null ) {
-            serviceTrans( service.getServiceTrans() );
+            context.removeServiceTransExecutor( serviceTransExecutor.getKey() );
+            serviceTransExecutor.stopAll();
+            serviceTransExecutor = null;
           }
 
-          if ( serviceTrans != null ) {
-            int windowMaxRowLimit = (int) getStreamingLimit( rowLimit, service.getRowLimit(), getKettleRowLimit(),
+          // Gets service execution from context
+          if ( serviceTransExecutor == null ) {
+            if ( serviceTrans == null && service.getServiceTrans() != null ) {
+              serviceTrans( service.getServiceTrans() );
+            }
+
+            if ( serviceTrans != null ) {
+              int windowMaxRowLimit = (int) getStreamingLimit( rowLimit, service.getRowLimit(), getKettleRowLimit(),
                 DataServiceConstants.ROW_LIMIT_DEFAULT );
-            long windowMaxTimeLimit = getStreamingLimit( timeLimit, service.getTimeLimit(), getKettleTimeLimit(),
+              long windowMaxTimeLimit = getStreamingLimit( timeLimit, service.getTimeLimit(), getKettleTimeLimit(),
                 DataServiceConstants.TIME_LIMIT_DEFAULT );
 
-            serviceTransExecutor =
+              serviceTransExecutor =
                 new StreamingServiceTransExecutor( streamServiceKey, serviceTrans, service.getStepname(),
-                windowMaxRowLimit, windowMaxTimeLimit, context );
-            context.addServiceTransExecutor( serviceTransExecutor );
+                  windowMaxRowLimit, windowMaxTimeLimit, context );
+              context.addServiceTransExecutor( serviceTransExecutor );
+            }
+          } else {
+            prepareExecution = false;
+            serviceTrans( serviceTransExecutor.getServiceTrans() );
           }
-        } else {
-          prepareExecution = false;
-          serviceTrans( serviceTransExecutor.getServiceTrans() );
         }
       } else if ( serviceTrans == null && service.getServiceTrans() != null ) {
         serviceTrans( service.getServiceTrans() );
@@ -753,8 +755,14 @@ public class DataServiceExecutor {
         serviceTrans.addTransListener( new TransAdapter() {
           @Override
           public void transFinished( Trans trans ) throws KettleException {
-            //When the service transformation stops we should remove the service stream from the cache
-            context.removeServiceTransExecutor( streamServiceKey );
+            //When the service transformation is not being used we should remove the service stream from the cache
+            //It can be running because it may have been restarted (eg. ktr changes - see Builder::build())
+            synchronized ( context ) {
+              StreamingServiceTransExecutor streamingServiceTransExecutor = context.getServiceTransExecutor( streamServiceKey );
+              if ( streamingServiceTransExecutor != null && !streamingServiceTransExecutor.getServiceTrans().isRunning() ) {
+                context.removeServiceTransExecutor( streamServiceKey );
+              }
+            }
           }
         } );
 
